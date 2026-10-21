@@ -1,0 +1,100 @@
+name: ml-criterion
+x-app: &app
+  build:
+    context: .
+    dockerfile: deploy/app/Dockerfile
+    target: runtime
+  environment: &app-env
+    ML_METADATA_URL: postgresql+psycopg://criterion:${METADATA_PASSWORD:-local-metadata}@metadata-db:5432/criterion
+    ML_BENCH_DSN: postgresql://bench:${BENCH_PASSWORD:-local-bench}@bench-db:5432/bench
+    ML_ENABLE_DIAGNOSTIC_JOBS: ${ML_ENABLE_DIAGNOSTIC_JOBS:-false}
+    ML_RESOURCE_SAMPLE_SECONDS: ${ML_RESOURCE_SAMPLE_SECONDS:-0.1}
+  init: true
+services:
+  metadata-db:
+    image: postgres:15-bookworm
+    environment:
+      POSTGRES_USER: criterion
+      POSTGRES_PASSWORD: ${METADATA_PASSWORD:-local-metadata}
+      POSTGRES_DB: criterion
+    ports: ["127.0.0.1:55432:5432"]
+    volumes: ["metadata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U criterion -d criterion"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  bench-db:
+    profiles: ["bench"]
+    build:
+      context: .
+      dockerfile: deploy/bench/Dockerfile
+    environment:
+      POSTGRES_USER: bench
+      POSTGRES_PASSWORD: ${BENCH_PASSWORD:-local-bench}
+      POSTGRES_DB: bench
+    ports: ["127.0.0.1:55433:5432"]
+    volumes: ["bench:/var/lib/postgresql/data"]
+    shm_size: 256mb
+    cpus: 2
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "psql -U bench -d bench -Atc 'SELECT madlib.version()' >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      start_period: 120s
+      retries: 20
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      metadata-db: {condition: service_healthy}
+  api:
+    <<: *app
+    volumes: ["artifacts:/artifacts:ro"]
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  worker:
+    <<: *app
+    volumes: ["artifacts:/artifacts"]
+    cpus: 2
+    mem_limit: 1g
+    command: ["ml-criterion", "worker"]
+    stop_grace_period: 15s
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+  preflight:
+    <<: *app
+    profiles: ["bench"]
+    command: ["ml-criterion", "preflight"]
+    depends_on:
+      bench-db: {condition: service_healthy}
+  tests:
+    <<: *app
+    profiles: ["test"]
+    build:
+      context: .
+      dockerfile: deploy/app/Dockerfile
+      target: test
+    environment:
+      TEST_METADATA_URL: postgresql+psycopg://criterion:${METADATA_PASSWORD:-local-metadata}@metadata-db:5432/criterion
+    depends_on:
+      metadata-db: {condition: service_healthy}
+  benchmark-tests:
+    <<: *app
+    profiles: ["bench-test"]
+    build:
+      context: .
+      dockerfile: deploy/app/Dockerfile
+      target: test
+    environment:
+      TEST_METADATA_URL: postgresql+psycopg://criterion:${METADATA_PASSWORD:-local-metadata}@metadata-db:5432/criterion
+      TEST_BENCH_DSN: postgresql://bench:${BENCH_PASSWORD:-local-bench}@bench-db:5432/bench
+    depends_on:
+      metadata-db: {condition: service_healthy}
+      bench-db: {condition: service_healthy}
+volumes:
+  metadata:
+  bench:
+  artifacts:
