@@ -12,3 +12,7 @@ artifacts/
 build/
 dist/
 .coverage
+node_modules/
+.yarn-cache/
+frontend/test-results/
+frontend/playwright-report/

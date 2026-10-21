@@ -23,6 +23,7 @@ from ml_criterion.persistence.models import (
     ComparisonCase,
     Dataset,
     DatasetVersion,
+    Experiment,
     Job,
     Run,
 )
@@ -91,6 +92,57 @@ def create_app(settings: Settings | None = None, sessions=None):
     ):
         with sessions.begin() as session:
             return view(create_experiment(session, spec, idempotency_key))
+
+    @app.get("/api/v1/experiments")
+    def list_experiments(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0)):
+        with sessions() as session:
+            return [
+                view(e)
+                for e in session.scalars(
+                    select(Experiment)
+                    .order_by(Experiment.created_at.desc(), Experiment.id.desc())
+                    .offset(offset)
+                    .limit(limit)
+                )
+            ]
+
+    @app.get("/api/v1/datasets")
+    def list_datasets(limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0)):
+        with sessions() as session:
+            return [
+                {"id": d.id, "spec": d.spec, "created_at": d.created_at}
+                for d in session.scalars(
+                    select(Dataset)
+                    .order_by(Dataset.created_at.desc(), Dataset.id.desc())
+                    .offset(offset)
+                    .limit(limit)
+                )
+            ]
+
+    @app.get("/api/v1/datasets/{dataset_id}/versions")
+    def list_versions(
+        dataset_id: UUID, limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0)
+    ):
+        with sessions() as session:
+            if session.get(Dataset, dataset_id) is None:
+                raise ApplicationError("dataset_not_found", 404)
+            return [
+                {
+                    "id": v.id,
+                    "dataset_id": v.dataset_id,
+                    "status": v.status,
+                    "manifest": v.manifest,
+                    "error_code": v.error_code,
+                    "created_at": v.created_at,
+                }
+                for v in session.scalars(
+                    select(DatasetVersion)
+                    .where(DatasetVersion.dataset_id == dataset_id)
+                    .order_by(DatasetVersion.created_at.desc(), DatasetVersion.id.desc())
+                    .offset(offset)
+                    .limit(limit)
+                )
+            ]
 
     @app.post("/api/v1/experiments/validate")
     def validate(spec: BenchmarkSpec):

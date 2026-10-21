@@ -175,6 +175,32 @@ def test_health_ready_and_migration_roundtrip(client, sessions):
     assert client.get("/health/ready").status_code == 200
 
 
+def test_frontend_history_endpoints(client):
+    for n in range(3):
+        client.post("/api/v1/experiments", json={"kind": "diagnostic", "duration_seconds": n})
+    first = client.get("/api/v1/experiments?limit=2").json()
+    second = client.get("/api/v1/experiments?limit=2&offset=2").json()
+    assert len(first) == 2 and len(second) == 1
+    assert len({e["id"] for e in first + second}) == 3
+    assert first[0]["created_at"] >= first[1]["created_at"]
+    dataset = client.post(
+        "/api/v1/datasets",
+        json={
+            "name": "source",
+            "source_table": "not_materialized",
+            "id_column": "id",
+            "features": ["x"],
+            "target": "y",
+        },
+    ).json()
+    assert client.get("/api/v1/datasets").json()[0]["id"] == dataset["id"]
+    version = client.post(f"/api/v1/datasets/{dataset['id']}/versions").json()
+    versions = client.get(f"/api/v1/datasets/{dataset['id']}/versions").json()
+    assert versions[0]["id"] == version["id"] and versions[0]["status"] == "queued"
+    assert client.get(f"/api/v1/datasets/{uuid4()}/versions").status_code == 404
+    assert client.get("/api/v1/experiments?limit=101").status_code == 422
+
+
 @pytest.fixture
 def bench_settings(settings, tmp_path):
     dsn = os.environ.get("TEST_BENCH_DSN")

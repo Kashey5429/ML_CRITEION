@@ -11,6 +11,12 @@ x-app: &app
     ML_RESOURCE_SAMPLE_SECONDS: ${ML_RESOURCE_SAMPLE_SECONDS:-0.1}
   init: true
 services:
+  frontend:
+    build:
+      context: ./frontend
+    ports: ["127.0.0.1:8080:80"]
+    depends_on:
+      api: {condition: service_started}
   metadata-db:
     image: postgres:15-bookworm
     environment:
