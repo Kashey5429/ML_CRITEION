@@ -5,9 +5,11 @@
 Реализован сквозной сценарий линейной регрессии: регистрация источника, неизменяемая версия датасета, общее train/test-разбиение, матрица запусков, отдельные процессы обучения, метрики и JSON-артефакты. API и worker используют отдельную PostgreSQL для метаданных и очереди.
 
 - [Запуск и примеры API](docs/development.md)
+- [Документация каждого блока и поток эксперимента](docs/modules.md)
 - [Результаты проверок и исправление MADlib](docs/validation.md)
 - [Измерения CPU/RAM, парная статистика и рекомендации](docs/measurement-and-recommendations.md)
 - [Frontend: Vue 3, TypeScript и Yarn](docs/frontend.md)
+- [Сравнение на шести датасетах: результаты 21 октября 2026](docs/benchmark-series-2026-10-21.md)
 - [Целевая архитектура](docs/backend-architecture.md)
 - [План реализации](docs/backend-implementation-plan.md)
 
