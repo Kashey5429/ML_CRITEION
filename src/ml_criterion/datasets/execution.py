@@ -9,7 +9,8 @@ from ml_criterion.domain.specs import DatasetSpec
 
 def snapshot(connection, payload, attempt_id, settings):
     spec = DatasetSpec.model_validate(payload["source"])
-    if spec.source_schema not in settings.source_schemas:
+    imported = payload.get("file_source") is True and spec.source_schema == "uploads"
+    if spec.source_schema not in settings.source_schemas and not imported:
         raise ValueError("source_schema_not_allowed")
     relation = connection.execute(
         """
@@ -32,6 +33,8 @@ def snapshot(connection, payload, attempt_id, settings):
         ).fetchall()
     )
     numeric = {"int2", "int4", "int8", "float4", "float8", "numeric"}
+    if imported:
+        numeric.add("text")
     if any(columns.get(c) not in numeric for c in (*spec.features, spec.target)):
         raise ValueError("features_and_target_must_be_numeric")
     if columns.get(spec.id_column) not in {"int2", "int4", "int8", "text", "varchar", "uuid"}:
@@ -45,12 +48,14 @@ def snapshot(connection, payload, attempt_id, settings):
     """).format(
             sql.Identifier(name),
             sql.Identifier(spec.id_column),
-            sql.SQL(",").join(sql.Identifier(c) for c in spec.features),
+            sql.SQL(",").join(
+                sql.SQL("{}::float8").format(sql.Identifier(c)) for c in spec.features
+            ),
             sql.Identifier(spec.target),
             sql.Identifier(spec.source_schema),
             sql.Identifier(spec.source_table),
         ),
-        (settings.max_dataset_rows + 1,),
+        (settings.max_dataset_rows + 1 if settings.max_dataset_rows else None,),
     )
     connection.execute(
         sql.SQL("ALTER TABLE snapshots.{} ADD PRIMARY KEY (row_id)").format(sql.Identifier(name))
@@ -72,7 +77,7 @@ def snapshot(connection, payload, attempt_id, settings):
                 + b"\n"
             )
             count += 1
-    if not 4 <= count <= settings.max_dataset_rows:
+    if count < 4 or (settings.max_dataset_rows and count > settings.max_dataset_rows):
         raise ValueError("dataset_row_limit")
     return {
         "schema": "snapshots",
@@ -83,6 +88,8 @@ def snapshot(connection, payload, attempt_id, settings):
         "target": spec.target,
         "dtype": "float64",
         "version_id": payload["version_id"],
+        "display_columns": payload.get("display_columns", {}),
+        "source_name": payload.get("source_name", spec.name),
     }
 
 

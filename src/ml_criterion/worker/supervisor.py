@@ -73,6 +73,7 @@ class Supervisor:
             {
                 "ML_BENCH_DSN": self.settings.bench_dsn,
                 "ML_ARTIFACT_ROOT": self.settings.artifact_root,
+                "ML_UPLOAD_ROOT": self.settings.upload_root,
                 "ML_SOURCE_SCHEMAS": json.dumps(self.settings.source_schemas),
                 "ML_MAX_DATASET_ROWS": str(self.settings.max_dataset_rows),
                 "ML_SKLEARN_MEMORY_MB": str(self.settings.sklearn_memory_mb),

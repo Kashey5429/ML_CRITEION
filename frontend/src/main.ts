@@ -12,7 +12,7 @@ import './style.css'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/experiments' },
+    { path: '/', redirect: '/experiments/new' },
     { path: '/experiments', component: () => import('./pages/Experiments.vue') },
     { path: '/experiments/new', component: () => import('./pages/NewExperiment.vue') },
     { path: '/experiments/:id', component: () => import('./pages/Experiment.vue') },

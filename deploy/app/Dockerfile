@@ -8,7 +8,7 @@ COPY src ./src
 COPY alembic.ini ./
 COPY migrations ./migrations
 RUN uv sync --frozen --no-dev && useradd --uid 10001 --create-home app \
-    && mkdir /artifacts && chown app:app /artifacts
+    && mkdir /artifacts /uploads && chown app:app /artifacts /uploads
 USER app
 CMD ["uvicorn", "ml_criterion.api.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
 

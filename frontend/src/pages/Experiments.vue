@@ -26,7 +26,7 @@ const shown = computed(() =>
     (e) =>
       (tab.value === 'all' ||
         (tab.value === 'active' ? active(e.status) : e.status === 'succeeded')) &&
-      `${e.id} ${labels[e.status]} ${e.spec.kind}`
+      `${e.id} ${e.data_name || ''} ${labels[e.status]} ${e.spec.kind}`
         .toLowerCase()
         .includes(search.value.toLowerCase()),
   ),
@@ -41,35 +41,17 @@ async function turn(delta: number) {
   <div class="page-heading">
     <div>
       <div class="eyebrow">ИССЛЕДОВАНИЯ / 01</div>
-      <h1>Эксперименты</h1>
+      <h1>История сравнений</h1>
       <p>От гипотезы до измеримого результата.</p>
     </div>
     <RouterLink class="button primary" to="/experiments/new"
-      ><Plus :size="18" />Новый эксперимент</RouterLink
+      ><Plus :size="18" />Новое сравнение</RouterLink
     >
   </div>
-  <section class="intro-banner">
-    <div>
-      <span class="tag">ПОСТРОЕН ДЛЯ СРАВНЕНИЙ</span>
-      <h2>Где вашей модели<br />работается быстрее?</h2>
-      <p>Одинаковые данные. Парные запуски.<br />Время, ресурсы и качество — в одном отчёте.</p>
-    </div>
-    <div class="comparison-art" aria-hidden="true">
-      <div class="art-grid"></div>
-      <div class="art-node db">
-        <DatabaseIcon /><span>PostgreSQL<small>MADlib</small></span>
-      </div>
-      <div class="art-link"><span>vs</span></div>
-      <div class="art-node py">
-        <span class="py-symbol">py</span><span>Python<small>scikit-learn</small></span>
-      </div>
-      <span class="art-caption">ОДНА ВЫБОРКА · ДВА ПОДХОДА</span>
-    </div>
-  </section>
   <div class="stats-grid">
     <div class="stat">
       <span>На этой странице <Layers3 :size="17" /></span><strong>{{ rows.length }}</strong
-      ><small>сохранённых экспериментов</small>
+      ><small>сохранённых сравнений</small>
     </div>
     <div class="stat">
       <span>В работе <Clock3 :size="17" /></span><strong>{{ running }}</strong
@@ -104,7 +86,7 @@ async function turn(delta: number) {
         <label class="search"
           ><Search :size="16" /><input
             v-model="search"
-            placeholder="Найти по ID или статусу"
+            placeholder="Найти по файлу, ID или статусу"
             aria-label="Поиск экспериментов" /></label
         ><button class="icon-button" aria-label="Обновить эксперименты" @click="refresh">
           <RefreshCw :size="17" />
@@ -114,16 +96,16 @@ async function turn(delta: number) {
     <div v-if="loading" class="empty">Загружаем историю…</div>
     <div v-else-if="!shown.length" class="empty">
       <FlaskConical :size="34" />
-      <h3>{{ rows.length ? 'Ничего не найдено' : 'Начните с первого эксперимента' }}</h3>
+      <h3>{{ rows.length ? 'Ничего не найдено' : 'Начните с первого сравнения' }}</h3>
       <p>
         {{
           rows.length
             ? 'Измените поиск или фильтр.'
-            : 'Добавьте датасет и сравните два подхода на одной выборке.'
+            : 'Загрузите файл и сравните два подхода на одной выборке.'
         }}
       </p>
-      <RouterLink v-if="!rows.length" to="/datasets" class="button secondary"
-        >Перейти к датасетам <ArrowUpRight :size="16"
+      <RouterLink v-if="!rows.length" to="/experiments/new" class="button secondary"
+        >Загрузить данные <ArrowUpRight :size="16"
       /></RouterLink>
     </div>
     <div v-else class="table-wrap">
@@ -143,7 +125,9 @@ async function turn(delta: number) {
               <RouterLink class="record-link" :to="`/experiments/${e.id}`"
                 ><span class="record-icon"><FlaskConical :size="19" /></span
                 ><span
-                  >{{ e.spec.kind === 'benchmark' ? 'Линейная регрессия' : 'Диагностика'
+                  >{{
+                    e.data_name ||
+                    (e.spec.kind === 'benchmark' ? 'Линейная регрессия' : 'Диагностика')
                   }}<small class="mono">#{{ short(e.id) }}</small></span
                 ></RouterLink
               >
@@ -179,6 +163,3 @@ async function turn(delta: number) {
     </div>
   </section>
 </template>
-<script lang="ts">
-import { Database as DatabaseIcon } from 'lucide-vue-next'
-</script>

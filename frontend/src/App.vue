@@ -17,19 +17,24 @@ usePolling(async () => {
 <template>
   <a class="skip-link" href="#main">Перейти к содержимому</a>
   <aside class="sidebar" :class="{ open: menu }">
-    <RouterLink class="brand" to="/experiments" @click="menu = false"
+    <RouterLink class="brand" to="/experiments/new" @click="menu = false"
       ><span class="brand-mark">m<span>c</span></span>
       <div>ML Criterion<small>Лаборатория экспериментов</small></div></RouterLink
     >
     <div class="nav-caption">РАБОЧЕЕ ПРОСТРАНСТВО</div>
     <nav aria-label="Основная навигация">
+      <RouterLink to="/experiments/new" @click="menu = false"
+        ><FlaskConical :size="19" />Новое сравнение</RouterLink
+      >
       <RouterLink
         to="/experiments"
-        :class="{ selected: route.path.startsWith('/experiments') }"
+        :class="{ selected: route.path === '/experiments' }"
         @click="menu = false"
-        ><FlaskConical :size="19" /> Эксперименты</RouterLink
+        ><FlaskConical :size="19" /> История сравнений</RouterLink
       >
-      <RouterLink to="/datasets" @click="menu = false"><Database :size="19" /> Датасеты</RouterLink>
+      <RouterLink to="/datasets" @click="menu = false"
+        ><Database :size="19" /> Мои данные</RouterLink
+      >
     </nav>
     <div class="sidebar-note">
       <div class="mini-symbol">↗</div>
@@ -50,7 +55,13 @@ usePolling(async () => {
         <X v-if="menu" :size="20" /><Menu v-else :size="20" /></button
       ><span class="breadcrumb"
         >Рабочее пространство <span>/</span>
-        {{ route.path.startsWith('/datasets') ? 'Датасеты' : 'Эксперименты' }}</span
+        {{
+          route.path.startsWith('/datasets')
+            ? 'Мои данные'
+            : route.path === '/experiments/new'
+              ? 'Новое сравнение'
+              : 'История сравнений'
+        }}</span
       ><a href="http://localhost:8000/docs" target="_blank" rel="noopener"
         >API документация <ArrowUpRight :size="15" /></a
       ><span class="avatar" title="Локальное рабочее пространство">ML</span>

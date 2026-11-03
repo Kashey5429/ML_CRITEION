@@ -39,6 +39,8 @@ def resource_value(result, scope, metric):
 
 
 def feasibility(pairs, backend, policy):
+    if not pairs:
+        return {"status": "unknown", "violations": [], "unknown": ["no_valid_pairs"]}
     violations, unknown = set(), set()
     other = "sklearn" if backend == "madlib" else "madlib"
     for pair in pairs:

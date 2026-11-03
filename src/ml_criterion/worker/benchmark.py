@@ -14,6 +14,7 @@ from ml_criterion.backends.base import RunContext
 from ml_criterion.backends.madlib import MadlibAdapter
 from ml_criterion.backends.sklearn import SklearnAdapter
 from ml_criterion.datasets.execution import prepare, snapshot
+from ml_criterion.datasets.files import import_csv
 from ml_criterion.measurement.resources import make_sampler
 
 
@@ -127,7 +128,9 @@ def execute(payload, attempt_id, settings):
         options=f"-cstatement_timeout={timeout} -clock_timeout=5000",
     ) as connection:
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-        if payload["kind"] == "snapshot":
+        if payload["kind"] == "import":
+            result = import_csv(connection, payload, attempt_id, settings)
+        elif payload["kind"] == "snapshot":
             result = snapshot(connection, payload, attempt_id, settings)
         elif payload["kind"] == "prepare":
             result = prepare(connection, payload, attempt_id)

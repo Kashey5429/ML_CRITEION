@@ -3,7 +3,7 @@ from uuid import uuid4, uuid5
 from sqlalchemy import select
 
 from ml_criterion.domain.specs import BenchmarkSpec
-from ml_criterion.persistence.models import ComparisonCase, DatasetVersion, Job, Run
+from ml_criterion.persistence.models import ComparisonCase, DatasetVersion, FileImport, Job, Run
 
 
 def plan_matrix(experiment_id, spec, manifest):
@@ -73,6 +73,12 @@ def enqueue_benchmark(session, experiment):
 
 def complete_job(session, job, experiment, status, result, error_code):
     """Called only inside the queue's ownership-checked publication transaction."""
+    if job.kind == "import":
+        item = session.get(FileImport, job.import_id, with_for_update=True)
+        item.status = "ready" if status == "succeeded" else status
+        item.profile = result if status == "succeeded" else None
+        item.error_code = error_code
+        return
     if job.kind == "snapshot":
         version = session.get(DatasetVersion, job.version_id, with_for_update=True)
         version.status = "ready" if status == "succeeded" else status

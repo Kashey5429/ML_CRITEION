@@ -11,9 +11,12 @@ class Settings(BaseSettings):
     lease_seconds: int = Field(default=30, ge=3)
     enable_diagnostic_jobs: bool = False
     source_schemas: tuple[str, ...] = ("public",)
-    max_dataset_rows: int = Field(default=1000000, ge=4)
+    # Zero disables the optional operator row cap; file bytes are not capped.
+    max_dataset_rows: int = Field(default=0, ge=0)
     sklearn_memory_mb: int = Field(default=512, ge=16)
     artifact_root: str = "/artifacts"
+    upload_root: str = "/uploads"
+    upload_retention_hours: int = Field(default=24, ge=1)
     resource_sample_seconds: float = Field(default=0.1, ge=0.05, le=2, allow_inf_nan=False)
 
     @model_validator(mode="after")

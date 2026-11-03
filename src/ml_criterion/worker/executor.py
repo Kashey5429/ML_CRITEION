@@ -46,6 +46,8 @@ def main():
         }
         if isinstance(exc, ValueError) and str(exc) in allowed:
             code = str(exc)
+        elif payload["kind"] == "import" and isinstance(exc, ValueError):
+            code = str(exc)[:500]
         elif isinstance(exc, psycopg.Error) and exc.sqlstate:
             code = "bench_sql_" + exc.sqlstate
         print(json.dumps({"ok": False, "error_code": code}))

@@ -5,7 +5,7 @@ from uuid import UUID
 
 from fastapi import FastAPI, Header, Query
 from fastapi.responses import FileResponse, JSONResponse
-from sqlalchemy import select, text
+from sqlalchemy import String, cast, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from ml_criterion.application.experiments import (
@@ -29,7 +29,7 @@ from ml_criterion.persistence.models import (
 )
 
 
-def view(experiment):
+def view(experiment, version=None, dataset=None):
     return {
         "id": str(experiment.id),
         "status": experiment.status,
@@ -37,6 +37,11 @@ def view(experiment):
         "config_hash": experiment.config_hash,
         "created_at": experiment.created_at,
         "cancel_requested_at": experiment.cancel_requested_at,
+        "data_name": (
+            (version.manifest or {}).get("source_name") or dataset.spec.get("name")
+            if version and dataset
+            else None
+        ),
     }
 
 
@@ -53,6 +58,9 @@ def create_app(settings: Settings | None = None, sessions=None):
             engine.dispose()
 
     app = FastAPI(title="ML Criterion", version="0.1.0", lifespan=lifespan)
+    from ml_criterion.api.imports import register_import_routes
+
+    register_import_routes(app, sessions, settings)
 
     @app.exception_handler(ApplicationError)
     async def application_error(request, exc):
@@ -97,14 +105,31 @@ def create_app(settings: Settings | None = None, sessions=None):
     def list_experiments(limit: int = Query(30, ge=1, le=100), offset: int = Query(0, ge=0)):
         with sessions() as session:
             return [
-                view(e)
-                for e in session.scalars(
-                    select(Experiment)
+                view(e, v, d)
+                for e, v, d in session.execute(
+                    select(Experiment, DatasetVersion, Dataset)
+                    .outerjoin(
+                        DatasetVersion,
+                        cast(DatasetVersion.id, String)
+                        == Experiment.spec["dataset_version_id"].astext,
+                    )
+                    .outerjoin(Dataset, Dataset.id == DatasetVersion.dataset_id)
                     .order_by(Experiment.created_at.desc(), Experiment.id.desc())
                     .offset(offset)
                     .limit(limit)
                 )
             ]
+
+    @app.post("/api/v1/comparisons", status_code=202)
+    def launch_comparison(
+        spec: BenchmarkSpec,
+        idempotency_key: Annotated[str, Header(min_length=1, max_length=128)],
+    ):
+        with sessions.begin() as session:
+            experiment = create_experiment(session, spec, idempotency_key)
+            if experiment.status == "draft":
+                start_experiment(session, experiment.id, settings)
+            return view(experiment)
 
     @app.get("/api/v1/datasets")
     def list_datasets(limit: int = Query(100, ge=1, le=100), offset: int = Query(0, ge=0)):
@@ -180,6 +205,8 @@ def create_app(settings: Settings | None = None, sessions=None):
             dataset = session.get(Dataset, dataset_id)
             if not dataset:
                 raise ApplicationError("dataset_not_found", 404)
+            if dataset.spec.get("kind") == "file":
+                raise ApplicationError("Выберите столбцы в мастере сравнения.", 422)
             version = DatasetVersion(dataset_id=dataset_id)
             session.add(version)
             session.flush()
@@ -209,6 +236,7 @@ def create_app(settings: Settings | None = None, sessions=None):
                 "status": version.status,
                 "manifest": version.manifest,
                 "error_code": version.error_code,
+                "selection": version.selection,
             }
 
     @app.get("/api/v1/experiments/{experiment_id}")

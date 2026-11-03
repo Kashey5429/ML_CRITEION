@@ -12,10 +12,11 @@ import {
   ArrowUpRight,
   Info,
 } from 'lucide-vue-next'
-import { api, all, active, short, date, number, seconds, labels, reasons } from '../api'
-import type { Experiment, Results, Run, Attempt } from '../api'
+import { api, all, active, short, date, number, seconds, labels, reasons, humanError } from '../api'
+import type { Experiment, Results, Run, Attempt, Version } from '../api'
 import { usePolling } from '../usePolling'
 import Status from '../components/Status.vue'
+const sourceVersion = ref<Version | null>(null)
 const id = String(useRoute().params.id),
   experiment = ref<Experiment | null>(null),
   results = ref<Results | null>(null),
@@ -33,6 +34,8 @@ const { error, loading, refresh } = usePolling(async () => {
     api<Run[]>(`/experiments/${id}/runs?limit=200`),
     all<Attempt>(`/experiments/${id}/attempts`),
   ])
+  if (e.spec.dataset_version_id && !sourceVersion.value)
+    sourceVersion.value = await api<Version>(`/dataset-versions/${e.spec.dataset_version_id}`)
   experiment.value = e
   results.value = res
   runs.value = r
@@ -51,6 +54,10 @@ const progress = computed(() =>
   runs.value.length ? Math.round((finished.value / runs.value.length) * 100) : 0,
 )
 const failures = computed(() => attempts.value.filter((a) => a.error_code))
+const failureSummary = computed(() => [...new Set(failures.value.map((a) => a.error_code!))])
+const streaming = computed(() =>
+  runs.value.some((r) => r.result?.diagnostics?.execution_mode === 'streaming'),
+)
 const maxTime = computed(() =>
   Math.max(
     selected.value?.statistics?.median_madlib_ns || 0,
@@ -81,7 +88,7 @@ const rmse = (v: number | null | undefined) =>
 </script>
 <template>
   <RouterLink class="back-link" to="/experiments"
-    ><ArrowLeft :size="16" />Все эксперименты</RouterLink
+    ><ArrowLeft :size="16" />История сравнений</RouterLink
   >
   <div v-if="error || actionError" class="alert error" role="alert">
     {{ actionError || error }} <button @click="refresh">Повторить</button>
@@ -91,7 +98,7 @@ const rmse = (v: number | null | undefined) =>
     <div class="page-heading">
       <div>
         <div class="eyebrow">
-          ЭКСПЕРИМЕНТ / <span class="mono">{{ short(id) }}</span>
+          СРАВНЕНИЕ / <span class="mono">{{ short(id) }}</span>
         </div>
         <h1>
           {{
@@ -104,6 +111,12 @@ const rmse = (v: number | null | undefined) =>
         </p>
       </div>
       <div class="actions">
+        <RouterLink
+          v-if="experiment.spec.kind === 'benchmark'"
+          class="button secondary"
+          :to="{ path: '/experiments/new', query: { repeat: id } }"
+          >Повторить / изменить настройки</RouterLink
+        >
         <a
           v-if="results?.analysis"
           class="button secondary"
@@ -127,6 +140,35 @@ const rmse = (v: number | null | undefined) =>
         </button>
       </div>
     </div>
+    <p v-if="sourceVersion?.manifest" class="source-caption">
+      {{ sourceVersion.manifest.source_name || 'Сохранённые данные' }} ·
+      {{ number(sourceVersion.manifest.row_count, 0) }} строк · цель:
+      {{
+        sourceVersion.manifest.display_columns?.[sourceVersion.manifest.target || ''] ||
+        sourceVersion.manifest.target
+      }}
+    </p>
+    <div v-if="active(experiment.status)" class="info-note" role="status">
+      {{
+        experiment.status === 'queued'
+          ? 'Ожидаем свободный слот для сравнения'
+          : experiment.status === 'preparing'
+            ? 'Подготавливаем одинаковые выборки для двух подходов'
+            : experiment.status === 'cancelling'
+              ? 'Останавливаем выполнение'
+              : 'Обучаем модели и измеряем время, качество и ресурсы'
+      }}
+    </div>
+    <div v-if="failureSummary.length" class="alert warning" role="alert">
+      <div>
+        <strong>Есть ошибки выполнения — такие пары исключены из сравнения.</strong>
+        <p v-for="code in failureSummary" :key="code">{{ humanError(code) }}</p>
+      </div>
+    </div>
+    <p v-if="streaming" class="info-note">
+      Python: линейная регрессия на всех выбранных строках, обработка блоками (QR + scikit-learn).
+      Чтение данных и запись предсказаний включены во время выполнения.
+    </p>
     <div v-if="confirmCancel" class="alert warning" role="alert">
       <span>Остановить эксперимент? Завершённые результаты сохранятся.</span>
       <div class="actions">
@@ -204,18 +246,42 @@ const rmse = (v: number | null | undefined) =>
             >Вариант<select v-model="caseId">
               <option v-for="c in results.analysis.cases" :key="c.case_id" :value="c.case_id">
                 {{ number(c.config.sample_size, 0) }} строк ·
-                {{ c.config.fit_intercept ? 'с intercept' : 'без intercept' }}
+                {{ c.config.fit_intercept ? 'со свободным членом' : 'без свободного члена' }}
               </option>
             </select></label
           >
         </div>
         <div class="result-grid">
+          <section
+            class="recommend-card"
+            :class="{ neutral: !['madlib', 'sklearn'].includes(selected.verdict) }"
+          >
+            <div class="eyebrow"><CheckCheck :size="16" />РЕКОМЕНДАЦИЯ</div>
+            <h2>{{ labels[selected.verdict] || selected.verdict }}</h2>
+            <p v-for="r in selected.reasons" :key="r">{{ reasons[r] || r }}</p>
+            <div v-if="selected.statistics" class="recommend-facts">
+              <div>
+                <strong>{{ number(selected.statistics.median_ratio) }}×</strong
+                ><span>время MADlib / scikit-learn</span>
+              </div>
+              <div>
+                <strong
+                  >{{ number(selected.statistics.ci95[0]) }} –
+                  {{ number(selected.statistics.ci95[1]) }}</strong
+                ><span>95% bootstrap-интервал</span>
+              </div>
+            </div>
+            <div class="small">
+              {{ selected.statistics?.pairs || 0 }} из {{ selected.expected_pairs }} полных пар ·
+              {{ selected.excluded_pairs.length }} исключено
+            </div>
+          </section>
           <section class="panel chart-panel">
             <div class="section-heading">
               <h2>Время выполнения</h2>
               <Clock3 :size="18" class="muted" />
             </div>
-            <p class="muted small">Медиана model wall · только измеряемые пары</p>
+            <p class="muted small">Медиана времени работы модели · без прогревов</p>
             <div v-for="b in ['madlib', 'sklearn']" :key="b" class="bar-row">
               <div>
                 <span class="engine" :class="b">{{ labels[b] }}</span
@@ -247,30 +313,6 @@ const rmse = (v: number | null | undefined) =>
               ><small>Общая подготовка данных и оценка качества не входят.</small>
             </div>
           </section>
-          <section
-            class="recommend-card"
-            :class="{ neutral: !['madlib', 'sklearn'].includes(selected.verdict) }"
-          >
-            <div class="eyebrow"><CheckCheck :size="16" />РЕКОМЕНДАЦИЯ</div>
-            <h2>{{ labels[selected.verdict] || selected.verdict }}</h2>
-            <p v-for="r in selected.reasons" :key="r">{{ reasons[r] || r }}</p>
-            <div v-if="selected.statistics" class="recommend-facts">
-              <div>
-                <strong>{{ number(selected.statistics.median_ratio) }}×</strong
-                ><span>время MADlib / scikit-learn</span>
-              </div>
-              <div>
-                <strong
-                  >{{ number(selected.statistics.ci95[0]) }} –
-                  {{ number(selected.statistics.ci95[1]) }}</strong
-                ><span>95% bootstrap-интервал</span>
-              </div>
-            </div>
-            <div class="small">
-              {{ selected.statistics?.pairs || 0 }} из {{ selected.expected_pairs }} полных пар ·
-              {{ selected.excluded_pairs.length }} исключено
-            </div>
-          </section>
         </div>
         <section class="panel">
           <div class="panel-toolbar">
@@ -292,7 +334,10 @@ const rmse = (v: number | null | undefined) =>
               </thead>
               <tbody>
                 <tr>
-                  <td>RMSE <small>Медиана успешных измеряемых запусков</small></td>
+                  <td>
+                    Ошибка предсказания (RMSE)
+                    <small>Меньше — лучше; в единицах целевого столбца</small>
+                  </td>
                   <td v-for="b in ['madlib', 'sklearn']" :key="b" class="mono">
                     {{ rmse(quality(b)) }}
                   </td>
@@ -366,12 +411,12 @@ const rmse = (v: number | null | undefined) =>
                   : 'ограничения нарушены'
             }}
             <ul v-if="c.violations.length || c.unknown.length">
-              <li v-for="v in [...c.violations, ...c.unknown]" :key="v">{{ v }}</li>
+              <li v-for="v in [...c.violations, ...c.unknown]" :key="v">{{ humanError(v) }}</li>
             </ul>
           </div>
           <ul v-if="selected.excluded_pairs.length">
             <li v-for="p in selected.excluded_pairs" :key="p.pair_id">
-              Пара {{ short(p.pair_id) }}: {{ p.reason }}
+              Пара {{ short(p.pair_id) }}: {{ humanError(p.reason) }}
             </li>
           </ul>
         </details>
@@ -405,7 +450,9 @@ const rmse = (v: number | null | undefined) =>
                 </td>
                 <td>
                   {{ number(r.config.sample_size, 0)
-                  }}<small>{{ r.config.fit_intercept ? 'с intercept' : 'без intercept' }}</small>
+                  }}<small>{{
+                    r.config.fit_intercept ? 'со свободным членом' : 'без свободного члена'
+                  }}</small>
                 </td>
                 <td>{{ r.warmup ? 'Прогрев' : 'Измерение' }} {{ r.repeat_index + 1 }}</td>
                 <td><Status :value="r.status" /></td>
@@ -425,7 +472,7 @@ const rmse = (v: number | null | undefined) =>
         <div v-for="a in attempts" :key="a.id" class="attempt-row">
           <span class="mono">{{ short(a.id) }}</span
           ><Status :value="a.status" /><span v-if="a.error_code" class="error-text">{{
-            a.error_code
+            humanError(a.error_code)
           }}</span
           ><a
             v-if="a.result?.artifact"

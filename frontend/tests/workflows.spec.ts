@@ -50,76 +50,153 @@ test.beforeEach(async ({ page }) => {
 })
 test('history, filters and empty search', async ({ page }) => {
   await page.goto('/experiments')
-  await expect(page.getByRole('heading', { name: 'Эксперименты', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'История сравнений', exact: true })).toBeVisible()
   await expect(page.getByText('#experim')).toBeVisible()
   await page.getByRole('textbox', { name: 'Поиск экспериментов' }).fill('нет такой записи')
   await expect(page.getByRole('heading', { name: 'Ничего не найдено' })).toBeVisible()
 })
-test('validate immutable configuration, create draft and start explicitly', async ({ page }) => {
-  let created: unknown
-  await page.route('**/api/v1/experiments', async (r) => {
-    if (r.request().method() === 'POST') {
-      created = r.request().postDataJSON()
-      return r.fulfill({ json: experiment })
-    }
-    return r.fallback()
-  })
-  await page.route('**/api/v1/experiments/validate', async (r) => {
-    expect(r.request().postDataJSON().dataset_version_id).toBe(version.id)
-    await r.fulfill({ json: { cases: 1, runs: 12, measured_runs: 10 } })
-  })
-  await page.goto('/experiments/new')
-  await expect(page.getByRole('combobox', { name: 'Версия', exact: true })).toHaveValue(version.id)
-  await page.getByRole('button', { name: 'Проверить конфигурацию' }).click()
-  await expect(page.getByText('1 вариантов · 10 измеряемых запусков')).toBeVisible()
-  await page.getByRole('button', { name: 'Создать эксперимент', exact: true }).click()
-  await expect(page).toHaveURL(/\/experiments\/experiment-1$/)
-  expect(created).toMatchObject({ repeats: 5, warmups: 1, backends: ['madlib', 'sklearn'] })
-  let started = false
-  await page.route('**/api/v1/experiments/experiment-1/start', (r) => {
-    started = true
+test('saved PostgreSQL data prepares automatically and starts with one action', async ({
+  page,
+}) => {
+  let submitted: any
+  await page.route('**/api/v1/datasets/dataset-1/prepare', (r) => r.fulfill({ json: version }))
+  await page.route('**/api/v1/dataset-versions/version-1', (r) => r.fulfill({ json: version }))
+  await page.route('**/api/v1/comparisons', (r) => {
+    submitted = r.request().postDataJSON()
+    expect(r.request().headers()['idempotency-key']).toBeTruthy()
     return r.fulfill({ json: { ...experiment, status: 'queued' } })
   })
-  await page.getByRole('button', { name: 'Запустить', exact: true }).click()
-  await expect.poll(() => started).toBe(true)
+  await page.goto('/experiments/new')
+  await page.getByLabel('Или используйте сохранённые данные').selectOption(dataset.id)
+  await page.getByRole('button', { name: 'Продолжить', exact: true }).click()
+  await expect(page.getByText('Цель:', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'Продолжить', exact: true }).click()
+  await page.getByRole('button', { name: 'Запустить сравнение' }).click()
+  await expect(page).toHaveURL(/\/experiments\/experiment-1$/)
+  expect(submitted).toMatchObject({ dataset_version_id: version.id, repeats: 5, warmups: 1 })
 })
-test('dataset registration and version creation are separate', async ({ page }) => {
-  let submitted: unknown,
-    versionCreated = false
-  await page.route('**/api/v1/datasets', (r) => {
-    if (r.request().method() === 'POST') {
-      submitted = r.request().postDataJSON()
-      return r.fulfill({ json: dataset })
-    }
-    return r.fallback()
+
+const fileImport = {
+  id: 'import-1',
+  dataset_id: dataset.id,
+  filename: 'Мои данные.csv',
+  status: 'ready',
+  created_at: dataset.created_at,
+  error_code: null,
+  profile: {
+    row_count: 12,
+    encoding: 'utf-8-sig',
+    delimiter: ',',
+    preview: [['1', '2', 'дом']],
+    columns: [
+      { key: 'c0', name: 'Площадь', usable: true, missing: 0, invalid: 0, examples: [] },
+      { key: 'c1', name: 'Цена', usable: true, missing: 0, invalid: 0, examples: [] },
+      {
+        key: 'c2',
+        name: 'Описание',
+        usable: false,
+        missing: 0,
+        invalid: 12,
+        examples: ['Строка 2: не является конечным числом'],
+      },
+    ],
+  },
+}
+
+test('CSV upload, column validation, refresh recovery and launch retry', async ({ page }) => {
+  await page.route('**/api/v1/imports?*', (r) => r.fulfill({ status: 202, json: fileImport }))
+  await page.route('**/api/v1/imports/import-1', (r) => r.fulfill({ json: fileImport }))
+  await page.route('**/api/v1/datasets/dataset-1/prepare', (r) => {
+    expect(r.request().postDataJSON()).toEqual({
+      import_id: 'import-1',
+      features: ['c0'],
+      target: 'c1',
+    })
+    return r.fulfill({ json: version })
   })
-  await page.route('**/api/v1/datasets/dataset-1/versions', (r) => {
-    if (r.request().method() === 'POST') {
-      versionCreated = true
-      return r.fulfill({ json: version })
-    }
-    return r.fallback()
+  await page.route('**/api/v1/dataset-versions/version-1', (r) => r.fulfill({ json: version }))
+  const keys: string[] = []
+  await page.route('**/api/v1/comparisons', (r) => {
+    keys.push(r.request().headers()['idempotency-key']!)
+    return keys.length === 1
+      ? r.fulfill({ status: 503, json: { error: { code: 'Попробуйте ещё раз' } } })
+      : r.fulfill({ json: experiment })
   })
-  await page.goto('/datasets')
-  await page.getByRole('button', { name: 'Добавить источник', exact: true }).click()
-  await page.getByLabel('Название', { exact: true }).fill('Продажи')
-  await page.getByLabel('Таблица', { exact: true }).fill('sales')
-  await page.getByLabel('Признаки через запятую').fill('x1, x2')
-  await page.getByLabel('Целевая переменная').fill('y')
-  await page.getByRole('button', { name: 'Зарегистрировать источник' }).click()
-  await expect
-    .poll(() => submitted)
-    .toMatchObject({ features: ['x1', 'x2'], source_table: 'sales' })
-  expect(versionCreated).toBe(false)
-  await page.getByRole('button', { name: 'Создать версию', exact: true }).click()
-  await expect.poll(() => versionCreated).toBe(true)
+  await page.goto('/')
+  await page.getByLabel('CSV-файл').setInputFiles({
+    name: 'Мои данные.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('Площадь,Цена\n1,2\n2,4\n3,6\n4,8'),
+  })
+  await page.getByRole('button', { name: 'Загрузить и проверить' }).click()
+  await expect(page.getByRole('heading', { name: 'Мои данные.csv' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Продолжить', exact: true })).toBeDisabled()
+  await page.getByLabel('Что предсказываем?').selectOption('c1')
+  await page.getByRole('checkbox', { name: /Площадь/ }).check()
+  await expect(page.getByRole('checkbox', { name: /Описание/ })).toBeDisabled()
+  await page.reload()
+  await expect(page.getByLabel('Что предсказываем?')).toHaveValue('c1')
+  await expect(page.getByRole('checkbox', { name: /Площадь/ })).toBeChecked()
+  await page.getByRole('button', { name: 'Продолжить', exact: true }).click()
+  await page.getByRole('button', { name: 'Запустить сравнение' }).click()
+  await expect(page.getByRole('alert')).toContainText('Попробуйте ещё раз')
+  await page.reload()
+  await page.getByRole('button', { name: 'Запустить сравнение' }).click()
+  await expect(page).toHaveURL(/\/experiments\/experiment-1$/)
+  expect(keys).toHaveLength(2)
+  expect(keys[0]).toBe(keys[1])
 })
+
+test('drag and drop accepts large file metadata and rejects unsupported formats', async ({
+  page,
+}) => {
+  await page.goto('/')
+  await page.getByLabel('CSV-файл').setInputFiles({
+    name: 'book.xlsx',
+    mimeType: 'application/octet-stream',
+    buffer: Buffer.from('x'),
+  })
+  await expect(page.getByRole('alert')).toContainText('CSV')
+  const data = await page.evaluateHandle(() => {
+    const transfer = new DataTransfer()
+    const file = new File(['x,y\n1,2'], 'drop.csv', { type: 'text/csv' })
+    // Exercise client validation without allocating or uploading a 100 GiB fixture.
+    Object.defineProperty(file, 'size', { value: 100 * 1024 ** 3 })
+    transfer.items.add(file)
+    return transfer
+  })
+  await page.locator('.upload-zone').dispatchEvent('drop', { dataTransfer: data })
+  await expect(page.getByRole('heading', { name: 'drop.csv' })).toBeVisible()
+  await expect(page.getByText('100 ГБ · готов к загрузке')).toBeVisible()
+})
+
+test('retry stored CSV without uploading the file again', async ({ page }) => {
+  let uploads = 0
+  await page.route('**/api/v1/imports?*', (r) => {
+    uploads++
+    return r.fulfill({ status: 202, json: fileImport })
+  })
+  let retried = false
+  await page.route('**/api/v1/imports/import-1/retry', (r) => {
+    retried = true
+    return r.fulfill({ status: 202, json: { ...fileImport, id: 'import-2' } })
+  })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Попробовать пример' }).click()
+  await expect(page.getByLabel('Что предсказываем?')).toBeVisible()
+  await page.getByText('Заменить файл или исправить распознавание', { exact: true }).click()
+  await page.getByRole('button', { name: 'Повторить проверку без загрузки' }).click()
+  await expect.poll(() => retried).toBe(true)
+  await expect(page.getByLabel('Что предсказываем?')).toBeVisible()
+  expect(uploads).toBe(1)
+})
+
 test('backend error is visible and retry works', async ({ page }) => {
   await page.route('**/api/v1/experiments?*', (r) =>
     r.fulfill({ status: 503, json: { error: { code: 'metadata_unavailable' } } }),
   )
   await page.goto('/experiments')
-  await expect(page.getByRole('alert')).toContainText('metadata_unavailable')
+  await expect(page.getByRole('alert')).toContainText('База данных временно недоступна')
   await page.unroute('**/api/v1/experiments?*')
   await page.getByRole('button', { name: 'Повторить', exact: true }).click()
   await expect(page.getByRole('alert')).toHaveCount(0)
@@ -128,8 +205,8 @@ test('mobile navigation, no page overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/experiments')
   await page.getByRole('button', { name: 'Открыть меню' }).click()
-  await page.getByRole('navigation').getByRole('link', { name: 'Датасеты' }).click()
-  await expect(page.getByRole('heading', { name: 'Датасеты', exact: true })).toBeVisible()
+  await page.getByRole('navigation').getByRole('link', { name: 'Мои данные' }).click()
+  await expect(page.getByRole('heading', { name: 'Мои данные', exact: true })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
     true,
   )

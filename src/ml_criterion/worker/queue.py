@@ -10,6 +10,7 @@ from ml_criterion.persistence.models import (
     BenchmarkSlot,
     DatasetVersion,
     Experiment,
+    FileImport,
     Job,
     Run,
 )
@@ -67,6 +68,8 @@ class Queue:
                 experiment.status = "preparing" if job.kind == "prepare" else "running"
             if job.version_id:
                 session.get(DatasetVersion, job.version_id).status = "running"
+            if job.import_id:
+                session.get(FileImport, job.import_id).status = "running"
             if job.run_id:
                 session.get(Run, job.run_id).status = "running"
             slot.state, slot.job_id, slot.token = "busy", job.id, job.token

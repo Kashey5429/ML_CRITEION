@@ -20,6 +20,95 @@ from ml_criterion.worker.supervisor import Supervisor
 pytestmark = pytest.mark.integration
 
 
+def test_upload_above_former_50_mib_limit(sessions, settings, tmp_path):
+    settings = settings.model_copy(update={"upload_root": str(tmp_path)})
+    chunk = b"1,2\n" * (1024 * 256)
+    with TestClient(create_app(settings, sessions)) as api:
+        response = api.post(
+            "/api/v1/imports?filename=large.csv",
+            content=(chunk for _ in range(51)),
+        )
+        assert response.status_code == 202, response.text
+        item = response.json()
+        assert (tmp_path / (item["id"] + ".csv")).stat().st_size == 51 * 1024**2
+        assert item["status"] == "queued"
+
+
+def test_csv_import_selection_and_atomic_launch(sessions, settings, tmp_path):
+    """Runs real CSV COPY and snapshots; metadata stays in the isolated test schema."""
+    from ml_criterion.worker.benchmark import execute
+
+    bench_dsn = os.environ.get("TEST_BENCH_DSN")
+    if not bench_dsn:
+        pytest.skip("Set TEST_BENCH_DSN for file imports")
+    settings = settings.model_copy(update={"upload_root": str(tmp_path), "bench_dsn": bench_dsn})
+    queue = Queue(sessions)
+
+    def process_one():
+        lease = queue.claim("import-test")
+        assert lease
+        result = execute(lease.spec, lease.attempt_id, settings)
+        assert queue.finish(lease, "succeeded", result=result)
+        return result
+
+    with TestClient(create_app(settings, sessions)) as api:
+        raw = "Площадь;Цена;Описание\n" + "\n".join(f"{i},5;{i * 2},25;дом" for i in range(1, 21))
+        response = api.post("/api/v1/imports?filename=sales.csv", content=raw.encode("cp1251"))
+        assert response.status_code == 202, response.text
+        item = response.json()
+        process_one()
+        profile = api.get(f"/api/v1/imports/{item['id']}").json()["profile"]
+        assert profile["row_count"] == 20
+        assert profile["columns"][0]["name"] == "Площадь"
+        assert profile["columns"][0]["usable"]
+        retry = api.post(f"/api/v1/imports/{item['id']}/retry", json={})
+        assert retry.status_code == 202, retry.text
+        assert retry.json()["id"] != item["id"]
+        assert retry.json()["dataset_id"] == item["dataset_id"]
+        process_one()
+        assert api.get(f"/api/v1/imports/{retry.json()['id']}").json()["profile"]["columns"][1][
+            "usable"
+        ]
+        endpoint = f"/api/v1/datasets/{item['dataset_id']}/prepare"
+        selection = {"import_id": item["id"], "features": ["c0"], "target": "c1"}
+        assert api.post(endpoint, json={**selection, "features": ["c2"]}).status_code == 422
+        prepared = api.post(endpoint, json=selection).json()
+        assert api.post(endpoint, json=selection).json()["id"] == prepared["id"]
+        original = process_one()
+        assert original["row_count"] == 20
+        import psycopg
+        from psycopg import sql
+
+        with psycopg.connect(bench_dsn, connect_timeout=5) as connection:
+            row = connection.execute(
+                sql.SQL("SELECT x,y FROM {}.{} WHERE row_id='1'").format(
+                    sql.Identifier(original["schema"]), sql.Identifier(original["table"])
+                )
+            ).fetchone()
+            assert row == ([1.5], 2.25)
+        headers = {"Idempotency-Key": str(uuid4())}
+        body = {"dataset_version_id": prepared["id"]}
+        first = api.post("/api/v1/comparisons", json=body, headers=headers)
+        assert first.status_code == 202, first.text
+        assert first.json()["status"] == "queued"
+        assert api.post("/api/v1/comparisons", json=body, headers=headers).json() == first.json()
+        assert (
+            api.post("/api/v1/comparisons", json={**body, "seed": 9}, headers=headers).status_code
+            == 409
+        )
+        # Updating the source must never alter the snapshot attached to an old comparison.
+        update = api.post(
+            f"/api/v1/imports?filename=updated.csv&dataset_id={item['dataset_id']}",
+            content=raw.replace(";2;", ";99;").encode("utf-8"),
+        ).json()
+        # A comparison prepare job precedes the second import in the queue.
+        # Check immutability directly before processing further benchmark jobs.
+        assert update["dataset_id"] == item["dataset_id"]
+        old = api.get(f"/api/v1/dataset-versions/{prepared['id']}").json()
+        assert old["manifest"]["checksum"] == original["checksum"]
+        assert old["selection"] == selection
+
+
 @pytest.fixture
 def sessions():
     url = os.environ.get("TEST_METADATA_URL")
@@ -266,6 +355,41 @@ def make_version(client, supervisor, table):
     state = client.get(f"/api/v1/dataset-versions/{version}").json()
     assert state["status"] == "ready", state
     return dataset, version, state["manifest"]
+
+
+def test_streaming_regression_across_batches(sessions, bench_settings, source):
+    import psycopg
+    from psycopg import sql
+
+    with psycopg.connect(bench_settings.bench_dsn, connect_timeout=5) as conn:
+        conn.execute(
+            sql.SQL(
+                "INSERT INTO public.{} SELECT i,i::float8,(i%7)::float8,"
+                "(3+2*i-4*(i%7))::float8 FROM generate_series(101,30000) i"
+            ).format(sql.Identifier(source))
+        )
+    supervisor = Supervisor(sessions, bench_settings)
+    with TestClient(create_app(bench_settings, sessions)) as client:
+        _, version, _ = make_version(client, supervisor, source)
+        response = client.post(
+            "/api/v1/comparisons",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={"dataset_version_id": version, "repeats": 1, "warmups": 0},
+        )
+        assert response.status_code == 202, response.text
+        identifier = response.json()["id"]
+        for _ in range(3):
+            supervisor.run(once=True)
+        runs = client.get(f"/api/v1/experiments/{identifier}/runs").json()
+        assert all(r["status"] == "succeeded" for r in runs), runs
+        for run in runs:
+            assert run["result"]["quality"]["rmse"] < 1e-7
+            if run["backend"] == "sklearn":
+                diagnostics = run["result"]["diagnostics"]
+                assert diagnostics["execution_mode"] == "streaming"
+                assert diagnostics["rows_processed"] == 24000
+                assert diagnostics["test_rows_processed"] == 6000
+                assert diagnostics["batch_rows"] < 6000
 
 
 def test_benchmark_matrix_and_immutable_version(sessions, bench_settings, source):

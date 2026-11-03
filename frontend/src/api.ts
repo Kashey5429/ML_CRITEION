@@ -1,6 +1,7 @@
 export interface Dataset {
   id: string
   spec: {
+    kind?: string
     name: string
     source_schema: string
     source_table: string
@@ -14,9 +15,39 @@ export interface Version {
   id: string
   dataset_id: string
   status: string
-  manifest: null | { row_count: number; checksum: string; features: string[] }
+  manifest: null | {
+    row_count: number
+    checksum: string
+    features: string[]
+    target?: string
+    source_name?: string
+    display_columns?: Record<string, string>
+  }
+  selection?: { import_id: string; features: string[]; target: string } | null
   error_code: string | null
   created_at: string
+}
+export interface FileImport {
+  id: string
+  dataset_id: string
+  filename: string
+  status: string
+  error_code: string | null
+  created_at: string
+  profile: null | {
+    row_count: number
+    encoding: string
+    delimiter: string
+    preview: string[][]
+    columns: {
+      key: string
+      name: string
+      usable: boolean
+      missing: number
+      invalid: number
+      examples: string[]
+    }[]
+  }
 }
 export interface Spec {
   kind: string
@@ -28,6 +59,7 @@ export interface Spec {
   [key: string]: unknown
 }
 export interface Experiment {
+  data_name?: string | null
   id: string
   status: string
   created_at: string
@@ -78,6 +110,7 @@ export interface Run {
   case_id: string
   config: { sample_size: number; fit_intercept: boolean }
   result: null | {
+    diagnostics?: { solver?: string; execution_mode?: string; batch_rows?: number }
     timings: { model_wall_ns: number }
     quality: { rmse: number }
     resources?: {
@@ -115,7 +148,9 @@ export async function api<T>(
             .map((d: { loc: string[]; msg: string }) => `${d.loc.slice(1).join('.')}: ${d.msg}`)
             .join('; ')
         : ''
-      throw new Error(data?.error?.code || detail || `Ошибка сервера (${response.status})`)
+      throw new Error(
+        humanError(data?.error?.code || detail || `Ошибка сервера (${response.status})`),
+      )
     }
     return (await response.json()) as T
   } catch (e) {
@@ -125,6 +160,27 @@ export async function api<T>(
   } finally {
     clearTimeout(timeout)
   }
+}
+export function humanError(code: string): string {
+  const messages: Record<string, string> = {
+    sklearn_memory_budget_exceeded: 'Python не запущен: превышен бюджет памяти адаптера.',
+    no_valid_pairs: 'Нет успешных пар для проверки ограничений.',
+    unsuccessful_run: 'Один или оба подхода завершились с ошибкой.',
+    metadata_unavailable: 'База данных временно недоступна. Повторите запрос.',
+    executor_failed: 'Не удалось обработать данные. Проверьте файл и доступность базы.',
+    executor_timeout:
+      'Обработка заняла слишком много времени. Уменьшите объём данных или увеличьте тайм-аут.',
+    source_must_be_a_table: 'Указанная таблица не найдена в экспериментальной базе.',
+    features_and_target_must_be_numeric: 'Цель и признаки должны быть числовыми столбцами.',
+    null_or_nonfinite_data: 'В выбранных столбцах есть пропуски, NaN или бесконечные значения.',
+    dataset_row_limit:
+      'Нужно не менее 4 строк. Проверьте также ограничение строк в настройках сервера.',
+    dataset_version_not_ready: 'Дождитесь завершения подготовки данных.',
+    source_schema_not_allowed: 'Эта схема PostgreSQL не разрешена в настройках приложения.',
+    'Invalid sample size or split':
+      'Размер выборки или доля проверки не подходят для количества строк.',
+  }
+  return messages[code] || code
 }
 export async function all<T>(path: string): Promise<T[]> {
   const rows: T[] = []

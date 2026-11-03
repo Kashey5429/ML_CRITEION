@@ -43,6 +43,7 @@ class Job(Base):
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
     experiment_id: Mapped[UUID | None] = mapped_column(ForeignKey("experiments.id"))
     version_id: Mapped[UUID | None] = mapped_column(ForeignKey("dataset_versions.id"))
+    import_id: Mapped[UUID | None] = mapped_column(ForeignKey("file_imports.id"))
     run_id: Mapped[UUID | None] = mapped_column(ForeignKey("runs.id"), unique=True)
     kind: Mapped[str] = mapped_column(String(24), default="diagnostic", server_default="diagnostic")
     payload: Mapped[dict] = mapped_column(JSONB, default=dict, server_default="{}")
@@ -89,6 +90,18 @@ class DatasetVersion(Base):
     dataset_id: Mapped[UUID] = mapped_column(ForeignKey("datasets.id"))
     status: Mapped[str] = mapped_column(String(24), default="queued")
     manifest: Mapped[dict | None] = mapped_column(JSONB)
+    error_code: Mapped[str | None] = mapped_column(Text)
+    selection: Mapped[dict | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FileImport(Base):
+    __tablename__ = "file_imports"
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    dataset_id: Mapped[UUID] = mapped_column(ForeignKey("datasets.id"))
+    filename: Mapped[str] = mapped_column(String(255))
+    status: Mapped[str] = mapped_column(String(24), default="queued")
+    profile: Mapped[dict | None] = mapped_column(JSONB)
     error_code: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
