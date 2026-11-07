@@ -44,6 +44,17 @@ const columns = computed(() => imported.value?.profile?.columns || [])
 const validSelection = computed(
   () => !!target.value && features.value.length > 0 && !features.value.includes(target.value),
 )
+const selectableFeatures = computed(() =>
+  columns.value.filter((c) => c.usable && c.key !== target.value),
+)
+const allFeaturesSelected = computed(
+  () =>
+    selectableFeatures.value.length > 0 &&
+    selectableFeatures.value.every((c) => features.value.includes(c.key)),
+)
+function toggleAllFeatures() {
+  features.value = allFeaturesSelected.value ? [] : selectableFeatures.value.map((c) => c.key)
+}
 const preparing = computed(
   () => !!version.value && ['queued', 'running'].includes(version.value.status),
 )
@@ -369,7 +380,17 @@ onMounted(async () => {
           </select></label
         >
         <fieldset class="feature-picker">
-          <legend>На основе каких данных?</legend>
+          <div class="feature-picker-heading">
+            <legend>На основе каких данных?</legend>
+            <button
+              type="button"
+              class="button quiet"
+              :disabled="!selectableFeatures.length"
+              @click="toggleAllFeatures"
+            >
+              {{ allFeaturesSelected ? 'Снять выделение' : 'Выбрать все' }}
+            </button>
+          </div>
           <p class="muted">Отметьте признаки. Цель и столбцы с ошибками исключены.</p>
           <label v-for="c in columns" :key="c.key" class="column-choice"
             ><input
