@@ -98,6 +98,9 @@ export interface Results {
     count: number
     median_model_wall_ns: number
     median_rmse: number
+    median_mse?: number
+    median_mae?: number | null
+    median_mape?: number | null
   }[]
   analysis: null | { cases: Case[]; policy: Record<string, unknown> }
 }
@@ -112,7 +115,7 @@ export interface Run {
   result: null | {
     diagnostics?: { solver?: string; execution_mode?: string; batch_rows?: number }
     timings: { model_wall_ns: number }
-    quality: { rmse: number }
+    quality: { rmse: number; mae?: number | null; mape?: number | null }
     resources?: {
       scopes: Record<
         string,

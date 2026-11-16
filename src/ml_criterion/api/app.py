@@ -342,6 +342,17 @@ def create_app(settings: Settings | None = None, sessions=None):
                             r["timings"]["model_wall_ns"] for r in items
                         ),
                         "median_rmse": median(r["quality"]["rmse"] for r in items),
+                        "median_mse": median(r["quality"]["rmse"] ** 2 for r in items),
+                        "median_mape": (
+                            median(r["quality"]["mape"] for r in items)
+                            if all(r["quality"].get("mape") is not None for r in items)
+                            else None
+                        ),
+                        "median_mae": (
+                            median(r["quality"]["mae"] for r in items)
+                            if all(r["quality"].get("mae") is not None for r in items)
+                            else None
+                        ),
                     }
                     for (case, backend), items in groups.items()
                 ],

@@ -80,11 +80,14 @@ async function command(action: string) {
     busy.value = false
   }
 }
-const quality = (backend: string) =>
+const quality = (backend: string, metric: 'rmse' | 'mse' | 'mae' | 'mape' = 'rmse') =>
   results.value?.summary.find((s) => s.case_id === caseId.value && s.backend === backend)
-    ?.median_rmse
-const rmse = (v: number | null | undefined) =>
-  v == null ? '—' : v === 0 ? '0' : v.toExponential(3)
+    ?.[`median_${metric}`]
+const errorNumberFormat = new Intl.NumberFormat('ru-RU', { maximumSignificantDigits: 4 })
+const formatError = (v: number | null | undefined) =>
+  v == null || !Number.isFinite(v) ? '—' : errorNumberFormat.format(v)
+const formatMape = (v: number | null | undefined) =>
+  v == null || !Number.isFinite(v) ? '—' : `${formatError(v)} %`
 </script>
 <template>
   <RouterLink class="back-link" to="/experiments"
@@ -339,7 +342,35 @@ const rmse = (v: number | null | undefined) =>
                     <small>Меньше — лучше; в единицах целевого столбца</small>
                   </td>
                   <td v-for="b in ['madlib', 'sklearn']" :key="b" class="mono">
-                    {{ rmse(quality(b)) }}
+                    {{ formatError(quality(b)) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    Средняя квадратичная ошибка (MSE)
+                    <small>Меньше — лучше; в квадрате единиц целевого столбца</small>
+                  </td>
+                  <td v-for="b in ['madlib', 'sklearn']" :key="b" class="mono">
+                    {{ formatError(quality(b, 'mse')) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    Средняя абсолютная ошибка (MAE)
+                    <small>Меньше — лучше; в единицах целевого столбца</small>
+                  </td>
+                  <td v-for="b in ['madlib', 'sklearn']" :key="b" class="mono">
+                    {{ formatError(quality(b, 'mae')) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td>
+                    Средняя абсолютная процентная ошибка (MAPE)
+                    <small>Меньше — лучше; при близких к нулю целях может быть очень большой</small>
+                    <small>—: нет данных или метрика неопределённа, например при нулевых целях</small>
+                  </td>
+                  <td v-for="b in ['madlib', 'sklearn']" :key="b" class="mono">
+                    {{ formatMape(quality(b, 'mape')) }}
                   </td>
                 </tr>
                 <template
@@ -441,6 +472,9 @@ const rmse = (v: number | null | undefined) =>
                 <th>Статус</th>
                 <th>Время</th>
                 <th>RMSE</th>
+                <th>MSE</th>
+                <th>MAE</th>
+                <th>MAPE, %</th>
               </tr>
             </thead>
             <tbody>
@@ -457,7 +491,12 @@ const rmse = (v: number | null | undefined) =>
                 <td>{{ r.warmup ? 'Прогрев' : 'Измерение' }} {{ r.repeat_index + 1 }}</td>
                 <td><Status :value="r.status" /></td>
                 <td>{{ seconds(r.result?.timings.model_wall_ns) }}</td>
-                <td class="mono">{{ rmse(r.result?.quality.rmse) }}</td>
+                <td class="mono">{{ formatError(r.result?.quality.rmse) }}</td>
+                <td class="mono">
+                  {{ formatError(r.result?.quality.rmse == null ? null : r.result.quality.rmse ** 2) }}
+                </td>
+                <td class="mono">{{ formatError(r.result?.quality.mae) }}</td>
+                <td class="mono">{{ formatMape(r.result?.quality.mape) }}</td>
               </tr>
             </tbody>
           </table>

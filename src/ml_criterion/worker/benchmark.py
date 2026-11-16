@@ -20,19 +20,28 @@ from ml_criterion.measurement.resources import make_sampler
 
 def evaluate(connection, namespace, expected):
     s = sql.Identifier(namespace)
-    rows, missing, extra, invalid, rmse, mae = connection.execute(
+    rows, missing, extra, invalid, rmse, mae, zero_targets, mape = connection.execute(
         sql.SQL("""
         SELECT count(*), count(*) FILTER (WHERE p.row_id IS NULL),
             count(*) FILTER (WHERE t.row_id IS NULL),
             count(*) FILTER (WHERE p.y_pred IS NULL OR
                 p.y_pred = ANY(ARRAY['NaN','Infinity','-Infinity']::float8[])),
-            sqrt(avg((p.y_pred-t.y)^2)), avg(abs(p.y_pred-t.y))
+            sqrt(avg((p.y_pred-t.y)^2)), avg(abs(p.y_pred-t.y)),
+            count(*) FILTER (WHERE t.y = 0),
+            100 * avg(abs((p.y_pred::numeric-t.y::numeric) / nullif(t.y::numeric, 0)))
         FROM {}.test t FULL JOIN {}.predictions p USING(row_id)
     """).format(s, s)
     ).fetchone()
     if rows != expected or missing or extra or invalid or not all(map(math.isfinite, [rmse, mae])):
         raise ValueError("invalid_predictions")
-    return {"rmse": rmse, "mae": mae, "test_rows": rows}
+    mape = float(mape) if mape is not None and not zero_targets else None
+    mape_reason = "zero_targets" if zero_targets else None
+    if mape is not None and not math.isfinite(mape):
+        mape, mape_reason = None, "non_finite"
+    return {
+        "rmse": rmse, "mae": mae, "test_rows": rows,
+        "mape": mape, "mape_unavailable_reason": mape_reason,
+    }
 
 
 def run_model(connection, payload, attempt_id, settings):
