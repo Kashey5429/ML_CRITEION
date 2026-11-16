@@ -97,6 +97,7 @@ export interface Results {
     backend: string
     count: number
     median_model_wall_ns: number
+    phase_timings_ns?: Record<string, number>
     median_rmse: number
     median_mse?: number
     median_mae?: number | null

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import nullcontext
 from uuid import uuid4
 
 import psutil
@@ -60,6 +61,15 @@ class Supervisor:
         self.queue = Queue(sessions, settings.lease_seconds)
         self.owner = str(uuid4())
         self.stop = threading.Event()
+        self.executors = {}
+
+    def close_executors(self):
+        for process, output, attempt_id in self.executors.values():
+            stop_process(process)
+            process.stdin.close()
+            output.close()
+            stop_bench_sessions(self.settings.bench_dsn, attempt_id)
+        self.executors.clear()
 
     def execute(self, lease):
         diagnostic = lease.spec["kind"] == "diagnostic"
@@ -80,25 +90,53 @@ class Supervisor:
                 "ML_RESOURCE_SAMPLE_SECONDS": str(self.settings.resource_sample_seconds),
             }
         )
+        persistent = lease.spec["kind"] == "run"
+        key = (
+            str(lease.experiment_id),
+            lease.spec.get("backend"),
+            json.dumps(lease.spec.get("prepared"), sort_keys=True),
+            lease.spec.get("fit_intercept"),
+            lease.spec.get("threads"),
+        )
+        if self.executors and any(k[0] != key[0] for k in self.executors):
+            self.close_executors()
+        cached = self.executors.get(key) if persistent else None
         timeout = lease.spec.get("timeout_seconds", 300)
         # A file avoids pipe deadlock for large prepared-dataset manifests.
-        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
-            process = subprocess.Popen(
-                [sys.executable, "-m", "ml_criterion.worker.executor"],
-                stdin=subprocess.PIPE,
-                stdout=output,
-                stderr=subprocess.DEVNULL,
-                text=True,
-                env=environment,
-                start_new_session=(os.name == "posix"),
+        with (
+            nullcontext(
+                cached[1] if cached else tempfile.TemporaryFile(mode="a+", encoding="utf-8")
             )
+            if persistent
+            else tempfile.TemporaryFile(mode="a+", encoding="utf-8")
+        ) as output:
+            output.seek(0, 2)
+            offset = output.tell()
+            process = (
+                cached[0]
+                if cached
+                else subprocess.Popen(
+                    [sys.executable, "-m", "ml_criterion.worker.executor"]
+                    + (["--persistent"] if persistent else []),
+                    stdin=subprocess.PIPE,
+                    stdout=output,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    env=environment,
+                    start_new_session=(os.name == "posix"),
+                )
+            )
+            if persistent:
+                self.executors[key] = (process, output, lease.attempt_id)
             status, result, code = "failed", None, "executor_failed"
             lost = False
             try:
                 process.stdin.write(
-                    json.dumps({"payload": lease.spec, "attempt_id": str(lease.attempt_id)})
+                    json.dumps({"payload": lease.spec, "attempt_id": str(lease.attempt_id)}) + "\n"
                 )
-                process.stdin.close()
+                process.stdin.flush()
+                if not persistent:
+                    process.stdin.close()
                 started = time.monotonic()
                 next_heartbeat = started
                 while True:
@@ -113,8 +151,18 @@ class Supervisor:
                     if self.stop.is_set() or now - started >= timeout:
                         code = "worker_shutdown" if self.stop.is_set() else "executor_timeout"
                         break
+                    if persistent:
+                        output.seek(offset)
+                        response = output.readline()
+                        if response.endswith("\n"):
+                            message = json.loads(response)
+                            if message["ok"]:
+                                status, result, code = "succeeded", message["result"], None
+                            else:
+                                code = message["error_code"]
+                            break
                     if process.poll() is not None:
-                        if process.returncode == 0:
+                        if process.returncode == 0 and not persistent:
                             output.seek(0)
                             message = json.loads(output.read(2 * 1024**2))
                             if message["ok"]:
@@ -124,14 +172,22 @@ class Supervisor:
                         break
                     self.stop.wait(0.1)
             finally:
-                stop_process(process)
-                if not process.stdin.closed:
-                    process.stdin.close()
-                if not diagnostic:
-                    # Failure to confirm SQL termination leaves the lease for quarantine.
-                    stop_bench_sessions(self.settings.bench_dsn, lease.attempt_id)
+                if not persistent or status != "succeeded":
+                    stop_process(process)
+                    if not process.stdin.closed:
+                        process.stdin.close()
+                    if persistent:
+                        self.executors.pop(key, None)
+                        output.close()
+                    if not diagnostic:
+                        # Failure to confirm SQL termination leaves the lease for quarantine.
+                        stop_bench_sessions(self.settings.bench_dsn, lease.attempt_id)
+            if lost:
+                self.close_executors()
             if not lost:
-                self.queue.finish(lease, status, result=result, error_code=code)
+                published = self.queue.finish(lease, status, result=result, error_code=code)
+                if not published or status != "succeeded":
+                    self.close_executors()
 
     def run(self, once=False):
         while not self.stop.is_set():
@@ -141,6 +197,8 @@ class Supervisor:
                 if lease:
                     log.info("job_started", extra={"job_id": str(lease.job_id)})
                     self.execute(lease)
+                else:
+                    self.close_executors()
             except Exception:
                 # Avoid logging database exception strings that may contain connection details.
                 log.error("worker_iteration_failed")
@@ -149,3 +207,4 @@ class Supervisor:
             if once:
                 return
             self.stop.wait(self.settings.poll_seconds)
+        self.close_executors()

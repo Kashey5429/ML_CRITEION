@@ -341,6 +341,17 @@ def create_app(settings: Settings | None = None, sessions=None):
                         "median_model_wall_ns": median(
                             r["timings"]["model_wall_ns"] for r in items
                         ),
+                        "phase_timings_ns": {
+                            phase: median(r["timings"][phase] for r in items)
+                            for phase in (
+                                "backend_prepare_ns",
+                                "train_ns",
+                                "predict_ns",
+                                "persist_results_ns",
+                                "evaluate_ns",
+                            )
+                            if all(phase in r["timings"] for r in items)
+                        },
                         "median_rmse": median(r["quality"]["rmse"] for r in items),
                         "median_mse": median(r["quality"]["rmse"] ** 2 for r in items),
                         "median_mape": (

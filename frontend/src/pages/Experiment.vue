@@ -81,8 +81,19 @@ async function command(action: string) {
   }
 }
 const quality = (backend: string, metric: 'rmse' | 'mse' | 'mae' | 'mape' = 'rmse') =>
+  results.value?.summary.find((s) => s.case_id === caseId.value && s.backend === backend)?.[
+    `median_${metric}`
+  ]
+const phaseTiming = (backend: string, phase: string) =>
   results.value?.summary.find((s) => s.case_id === caseId.value && s.backend === backend)
-    ?.[`median_${metric}`]
+    ?.phase_timings_ns?.[phase]
+const phases = [
+  ['backend_prepare_ns', 'Подготовка', 'Представления train/test и подготовка адаптера'],
+  ['train_ns', 'Обучение', 'Построение модели; для Python включает чтение обучающих данных'],
+  ['predict_ns', 'Предсказание', 'Расчёт прогнозов; у MADlib включает создание таблицы прогнозов'],
+  ['persist_results_ns', 'Сохранение', 'Запись результатов и индексов; состав зависит от адаптера'],
+  ['evaluate_ns', 'Оценка качества', 'Расчёт ошибок; не входит в общее время модели'],
+]
 const errorNumberFormat = new Intl.NumberFormat('ru-RU', { maximumSignificantDigits: 4 })
 const formatError = (v: number | null | undefined) =>
   v == null || !Number.isFinite(v) ? '—' : errorNumberFormat.format(v)
@@ -367,10 +378,26 @@ const formatMape = (v: number | null | undefined) =>
                   <td>
                     Средняя абсолютная процентная ошибка (MAPE)
                     <small>Меньше — лучше; при близких к нулю целях может быть очень большой</small>
-                    <small>—: нет данных или метрика неопределённа, например при нулевых целях</small>
+                    <small
+                      >—: нет данных или метрика неопределённа, например при нулевых целях</small
+                    >
                   </td>
                   <td v-for="b in ['madlib', 'sklearn']" :key="b" class="mono">
                     {{ formatMape(quality(b, 'mape')) }}
+                  </td>
+                </tr>
+                <tr v-for="phase in phases" :key="phase[0]">
+                  <td>
+                    {{ phase[1] }}<small>{{ phase[2] }}. Медиана без прогревов</small>
+                  </td>
+                  <td v-for="b in ['madlib', 'sklearn']" :key="b" class="mono">
+                    {{ seconds(phaseTiming(b, phase[0]!)) }}
+                  </td>
+                </tr>
+                <tr>
+                  <td colspan="3" class="muted small">
+                    Общее время модели включает подготовку, обучение, предсказание и сохранение.
+                    Медиана общего времени может отличаться от суммы медиан этапов.
                   </td>
                 </tr>
                 <template
@@ -493,7 +520,9 @@ const formatMape = (v: number | null | undefined) =>
                 <td>{{ seconds(r.result?.timings.model_wall_ns) }}</td>
                 <td class="mono">{{ formatError(r.result?.quality.rmse) }}</td>
                 <td class="mono">
-                  {{ formatError(r.result?.quality.rmse == null ? null : r.result.quality.rmse ** 2) }}
+                  {{
+                    formatError(r.result?.quality.rmse == null ? null : r.result.quality.rmse ** 2)
+                  }}
                 </td>
                 <td class="mono">{{ formatError(r.result?.quality.mae) }}</td>
                 <td class="mono">{{ formatMape(r.result?.quality.mape) }}</td>

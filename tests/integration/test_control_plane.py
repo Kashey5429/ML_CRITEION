@@ -425,6 +425,15 @@ def test_benchmark_matrix_and_immutable_version(sessions, bench_settings, source
         assert state["status"] == "succeeded", attempts
         runs = client.get(f"/api/v1/experiments/{identifier}/runs").json()
         assert len(runs) == 12
+        session_groups = {}
+        for run in runs:
+            key = (run["case_id"], run["backend"])
+            session_groups.setdefault(key, set()).add(
+                run["result"]["environment"]["postgres_backend_pid"]
+            )
+        assert all(len(pids) == 1 for pids in session_groups.values())
+        assert len(set.union(*session_groups.values())) == len(session_groups)
+        supervisor.close_executors()
         assert all(r["result"]["quality"]["rmse"] < 1e-7 for r in runs)
         for run in runs:
             resources = run["result"]["resources"]
@@ -544,3 +553,47 @@ def test_no_intercept_and_cancel_prepared_matrix(sessions, bench_settings, sourc
         assert client.get(f"/api/v1/experiments/{cancelled}").json()["status"] == "cancelled"
         runs = client.get(f"/api/v1/experiments/{cancelled}/runs").json()
         assert all(r["status"] == "cancelled" and r["result"] is None for r in runs)
+
+
+@pytest.mark.parametrize("action", ["timeout", "cancel"])
+def test_reused_executor_stops_blocked_run(sessions, bench_settings, source, action):
+    import psycopg
+    from psycopg import sql
+
+    supervisor = Supervisor(sessions, bench_settings)
+    try:
+        with TestClient(create_app(bench_settings, sessions)) as client:
+            _, version, _ = make_version(client, supervisor, source)
+            identifier = client.post(
+                "/api/v1/comparisons",
+                headers={"Idempotency-Key": str(uuid4())},
+                json={"dataset_version_id": version, "repeats": 1, "warmups": 1},
+            ).json()["id"]
+            for _ in range(3):
+                supervisor.run(once=True)
+            lease = supervisor.queue.claim(supervisor.owner)
+            assert lease.spec["kind"] == "run"
+            if action == "timeout":
+                lease.spec["timeout_seconds"] = 0.5
+            prepared = lease.spec["prepared"]
+            with psycopg.connect(bench_settings.bench_dsn) as blocker:
+                blocker.execute(
+                    sql.SQL("LOCK TABLE {}.{} IN ACCESS EXCLUSIVE MODE").format(
+                        sql.Identifier(prepared["schema"]), sql.Identifier(prepared["table"])
+                    )
+                )
+                with ThreadPoolExecutor(1) as pool:
+                    future = pool.submit(supervisor.execute, lease)
+                    if action == "cancel":
+                        time.sleep(0.2)
+                        client.post(f"/api/v1/experiments/{identifier}/cancel")
+                    future.result(timeout=10)
+            with sessions() as session:
+                attempt = session.get(Attempt, lease.attempt_id)
+                assert attempt.error_code == (
+                    "executor_timeout" if action == "timeout" else "cancel_requested"
+                )
+                assert session.get(BenchmarkSlot, 1).state == "available"
+            assert not supervisor.executors
+    finally:
+        supervisor.close_executors()

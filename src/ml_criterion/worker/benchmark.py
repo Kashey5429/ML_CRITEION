@@ -4,6 +4,7 @@ import math
 import os
 import platform
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import psycopg
@@ -39,8 +40,11 @@ def evaluate(connection, namespace, expected):
     if mape is not None and not math.isfinite(mape):
         mape, mape_reason = None, "non_finite"
     return {
-        "rmse": rmse, "mae": mae, "test_rows": rows,
-        "mape": mape, "mape_unavailable_reason": mape_reason,
+        "rmse": rmse,
+        "mae": mae,
+        "test_rows": rows,
+        "mape": mape,
+        "mape_unavailable_reason": mape_reason,
     }
 
 
@@ -92,7 +96,8 @@ def run_model(connection, payload, attempt_id, settings):
                 "threads": payload["threads"],
                 "threadpools": threadpool_info(),
                 "postgres": connection.execute("SHOW server_version").fetchone()[0],
-                "cache_policy": "uncontrolled_warm_cache",
+                "cache_policy": "session_reuse_warm_cache",
+                "postgres_backend_pid": connection.info.backend_pid,
                 "postgres_settings": dict(
                     connection.execute(
                         "SELECT name,setting FROM pg_settings WHERE name = ANY(%s)",
@@ -127,15 +132,26 @@ def run_model(connection, payload, attempt_id, settings):
         adapter.cleanup()
 
 
-def execute(payload, attempt_id, settings):
+def execute(payload, attempt_id, settings, connection=None):
     # Unique application_name allows the parent to stop exactly this attempt's SQL sessions.
     timeout = int(payload.get("timeout_seconds", 300) * 1000)
-    with psycopg.connect(
-        settings.bench_dsn,
-        connect_timeout=5,
-        application_name="mlc:" + attempt_id.hex,
-        options=f"-cstatement_timeout={timeout} -clock_timeout=5000",
+    with (
+        nullcontext(connection)
+        if connection is not None
+        else psycopg.connect(
+            settings.bench_dsn,
+            connect_timeout=5,
+            application_name="mlc:" + attempt_id.hex,
+            options=f"-cstatement_timeout={timeout} -clock_timeout=5000",
+        )
     ) as connection:
+        connection.execute(
+            "SELECT set_config('application_name', %s, false), "
+            "set_config('statement_timeout', %s, false), "
+            "set_config('lock_timeout', '5000', false)",
+            ("mlc:" + attempt_id.hex, str(timeout)),
+        )
+        connection.commit()
         connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         if payload["kind"] == "import":
             result = import_csv(connection, payload, attempt_id, settings)

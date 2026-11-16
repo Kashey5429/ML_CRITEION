@@ -1,4 +1,4 @@
-"""One attempt per process; parent owns terminal publication and cancellation."""
+"""Sequential attempts may share a process; parent owns publication and cancellation."""
 
 import json
 import sys
@@ -11,8 +11,7 @@ from ml_criterion.config import Settings
 from ml_criterion.domain.specs import DiagnosticSpec
 
 
-def main():
-    envelope = json.load(sys.stdin)
+def handle(envelope, connection=None):
     payload = envelope["payload"]
     try:
         if payload["kind"] == "diagnostic":
@@ -28,8 +27,10 @@ def main():
         else:
             from ml_criterion.worker.benchmark import execute
 
-            result = execute(payload, UUID(envelope["attempt_id"]), Settings())
-        print(json.dumps({"ok": True, "result": result}, allow_nan=False))
+            result = execute(
+                payload, UUID(envelope["attempt_id"]), Settings(), connection=connection
+            )
+        print(json.dumps({"ok": True, "result": result}, allow_nan=False), flush=True)
     except Exception as exc:
         code = "executor_failed"
         allowed = {
@@ -50,7 +51,18 @@ def main():
             code = str(exc)[:500]
         elif isinstance(exc, psycopg.Error) and exc.sqlstate:
             code = "bench_sql_" + exc.sqlstate
-        print(json.dumps({"ok": False, "error_code": code}))
+        print(json.dumps({"ok": False, "error_code": code}), flush=True)
+
+
+def main():
+    if "--persistent" not in sys.argv:
+        handle(json.load(sys.stdin))
+        return
+    settings = Settings()
+    with psycopg.connect(settings.bench_dsn, connect_timeout=5) as connection:
+        for line in sys.stdin:
+            handle(json.loads(line), connection)
+            connection.rollback()
 
 
 if __name__ == "__main__":
